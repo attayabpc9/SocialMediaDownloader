@@ -102,8 +102,8 @@
     <a class="nav-link" href="#features">Features</a>
     <a class="nav-link" href="#faq">FAQ</a>
     <a class="nav-link" href="#about">About</a>
-    <a class="nav-link" href="privacy">Privacy Policy</a>
-    <a class="nav-link" href="templates/terms.html">Terms of Use</a>
+    <a class="nav-link" href="{{ url_for('privacy_page') }}">Privacy Policy</a>
+    <a class="nav-link" href="{{ url_for('terms_page') }}">Terms of Use</a>
   </div>
   <div class="nav-actions">
     <button class="theme-toggle" id="theme-toggle" onclick="toggleTheme()" aria-label="Toggle dark mode" title="Toggle theme"><span id="theme-icon" aria-hidden="true"></span></button>
@@ -116,7 +116,7 @@
   <a href="#features" onclick="closeMobileMenu()">Features</a>
   <a href="#faq" onclick="closeMobileMenu()">FAQ</a>
   <a href="#about" onclick="closeMobileMenu()">About</a>
-  <a href="privacy.html" onclick="closeMobileMenu()">Privacy Policy</a>
+  <a href="{{ url_for('privacy_page') }}" onclick="closeMobileMenu()">Privacy Policy</a>
   <a href="{{url_for('terms_page')}}" onclick="closeMobileMenu()">Terms of Use</a>
 </div>
 
@@ -151,9 +151,9 @@
         <div class="preview-body">
           <div class="preview-title" id="preview-title">Video</div>
           <div class="preview-meta" id="preview-meta"></div>
-          <div class="quality-title">Choose download quality</div>
+          <div class="quality-title">Download status</div>
           <div class="qualities" id="qualities"></div>
-          <div class="preview-actions"><button class="btn" id="quality-download" onclick="downloadSelected()" disabled><svg class="btn-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12M7 11l5 5 5-5M5 21h14"/></svg>Download Selected Quality</button><button class="btn btn-secondary" onclick="resetDownloader()"><svg class="btn-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8 8 0 1 0 1 4"/><path d="M20 5v6h-6"/></svg>Download Another</button></div>
+          <div class="preview-actions"><button class="btn" id="quality-download" onclick="downloadSelected()" disabled><svg class="btn-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12M7 11l5 5 5-5M5 21h14"/></svg>Waiting for Download</button><button class="btn btn-secondary" id="another-button" onclick="resetDownloader()"><svg class="btn-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8 8 0 1 0 1 4"/><path d="M20 5v6h-6"/></svg>Download Another</button></div>
           <div class="download-result" id="download-result"><strong id="download-result-title">Download started</strong><p id="download-result-text">Your selected file is being downloaded.</p><div class="download-progress" id="download-progress"><div class="progress-track"><div class="progress-bar" id="download-progress-bar"></div></div><div class="progress-text"><span id="download-progress-label">Preparing…</span><span id="download-progress-percent">0%</span></div></div><div class="permission-note" id="permission-note"></div><button class="btn btn-secondary" onclick="resetDownloader()">Download Another</button></div>
         </div>
       </div>
@@ -206,7 +206,7 @@
 <footer class="footer">
   <div class="container footer-inner">
     <div>© 2026 VidzFlow. Built for simple public media downloads.</div>
-    <div class="footer-links"><a href="#about">About</a><a href="privacy.html">Privacy Policy</a><a href="terms.html">Terms of Use</a><a href="#faq">FAQ</a></div>
+    <div class="footer-links"><a href="#about">About</a><a href="{{ url_for('privacy_page') }}">Privacy Policy</a><a href="{{ url_for('terms_page') }}">Terms of Use</a><a href="#faq">FAQ</a></div>
   </div>
 </footer>
 
@@ -229,56 +229,117 @@
     $('status').innerHTML = `<div class="status status-${type}">${escapeHtml(message)}</div>`;
   }
   function escapeHtml(value){const d=document.createElement('div');d.textContent=String(value ?? '');return d.innerHTML;}
-  function formatDuration(seconds){
-    seconds = Number(seconds || 0); if(!seconds) return '';
-    const h=Math.floor(seconds/3600), m=Math.floor((seconds%3600)/60), s=Math.floor(seconds%60);
-    return h ? `${h}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}` : `${m}:${String(s).padStart(2,'0')}`;
+  let jobPhase='idle';
+  let pollGeneration=0;
+
+  function setJobPhase(phase){
+    jobPhase=phase;
+    const active=phase!=='idle';
+    const canSelect=phase==='awaiting_format';
+    const canDownload=phase==='ready';
+    $('fetch-button').disabled=active;
+    $('single-url').disabled=active;
+    $('quality-download').disabled=!canSelect && !canDownload;
+    $('another-button').disabled=!active;
+    if(phase==='preview') $('quality-download').textContent='Preparing Preview...';
+    if(phase==='processing') $('quality-download').textContent='Download Processing...';
+    if(phase==='awaiting_format') $('quality-download').textContent='Download Selected Format';
+    if(phase==='ready') $('quality-download').textContent='Download Ready File';
+    if(phase==='failed') $('quality-download').textContent='Download Failed';
   }
 
   function setFetching(on){
     $('fetch-spinner').style.display = on ? 'block' : 'none';
     $('fetch-text').textContent = on ? 'Fetching...' : 'Fetch Video';
-    $('fetch-button').disabled = on;
+    if(on) $('fetch-button').disabled = true;
+    else $('fetch-button').disabled = jobPhase !== 'idle';
   }
 
   async function fetchMedia(){
     const url = $('single-url').value.trim();
     if(!url){showStatus('Please enter a valid URL.','error');$('single-url').focus();return;}
-    resetPreviewOnly(); setFetching(true); showStatus('Fetching video information...','loading');
+    resetPreviewOnly(); setFetching(true); showStatus('Sending your job to the download service...','loading');
     try{
       const response = await fetch('/preview',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url})});
       const result = await response.json();
-      if(!response.ok || result.status !== 'success') throw new Error(result.message || 'Could not fetch video information.');
-      renderPreview(result,url);
-      $('status').innerHTML='';
+      if(!response.ok || !result.job_token) throw new Error(result.message || 'Could not start the download.');
+      renderQueuedJob(result,url);
+      pollJob(result.job_token,pollGeneration);
     }catch(error){showStatus(`${error.message}`,'error');}
     finally{setFetching(false);}
   }
 
-  function renderPreview(data,url){
+  function renderQueuedJob(data,url){
+    pollGeneration++;
     $('preview').classList.add('show'); $('preview').dataset.url=url;
-    $('preview-title').textContent=data.title || 'Video';
-    const bits=[]; if(data.platform) bits.push(data.platform.charAt(0).toUpperCase()+data.platform.slice(1)); if(data.uploader) bits.push(data.uploader); if(data.duration) bits.push(formatDuration(data.duration));
+    $('preview').dataset.jobToken=data.job_token;
+    $('preview').dataset.fileUrl='';
+    $('preview-thumb').style.display='none';
+    $('thumb-placeholder').style.display='grid';
+    setJobPhase('preview');
+    $('preview-title').textContent=data.title || 'Download job';
+    const bits=[]; if(data.platform) bits.push(data.platform.charAt(0).toUpperCase()+data.platform.slice(1)); bits.push('External worker');
     $('preview-meta').textContent=bits.join(' • ');
-    const img=$('preview-thumb');
-    if(data.thumbnail){img.src=data.thumbnail;img.style.display='block';$('thumb-placeholder').style.display='none';img.onerror=()=>{img.style.display='none';$('thumb-placeholder').style.display='grid';};}
-    else{img.style.display='none';$('thumb-placeholder').style.display='grid';}
-    const q=$('qualities'); q.innerHTML='';
-    (data.qualities || []).forEach((item,index)=>{
-      const button=document.createElement('button'); button.type='button'; button.className='quality'+(index===0?' active':''); button.dataset.quality=item.id;
-      button.innerHTML=`<strong>${escapeHtml(item.label || item.id)}</strong><small>${escapeHtml(item.detail || 'Available')}</small>`;
-      button.onclick=()=>selectQuality(button); q.appendChild(button);
-    });
-    $('quality-download').disabled = q.children.length === 0;
+    $('qualities').innerHTML='<div class="status status-loading">Preparing preview...</div>';
+    $('quality-download').disabled=true;
+    $('quality-download').textContent='Waiting for download';
     $('preview').scrollIntoView({behavior:'smooth',block:'nearest'});
   }
 
   function selectQuality(button){document.querySelectorAll('.quality').forEach(q=>q.classList.remove('active'));button.classList.add('active');}
   function selectedQuality(){const active=document.querySelector('.quality.active');return active ? active.dataset.quality : null;}
 
-  function getSuggestedFilename(result){
-    const raw = (result && result.filename) || ((result && result.title) ? result.title + '.mp4' : 'vidzflow-video.mp4');
-    return String(raw).replace(/[<>:"/\\|?*\x00-\x1F]/g,'_').trim() || 'vidzflow-video.mp4';
+  async function pollJob(token,generation=pollGeneration){
+    try{
+      if(generation!==pollGeneration) return;
+      const response=await fetch(`/jobs/${encodeURIComponent(token)}`,{cache:'no-store'});
+      const result=await response.json();
+      if(generation!==pollGeneration) return;
+      if(!response.ok || result.status==='failed' || result.status==='error') throw new Error(result.message || 'The download worker failed.');
+      if(result.thumbnail){
+        $('preview-thumb').src=result.thumbnail;
+        $('preview-thumb').style.display='block';
+        $('thumb-placeholder').style.display='none';
+      }
+      if(result.status==='awaiting_format'){
+        const formats=result.formats || [];
+        if(!formats.length){
+          $('qualities').innerHTML='<div class="status status-loading">Finishing preview...</div>';
+          window.setTimeout(()=>pollJob(token,generation),1000);
+          return;
+        }
+        $('qualities').innerHTML='';
+        formats.forEach((item,index)=>{
+          const button=document.createElement('button');
+          button.type='button'; button.className='quality'+(index===0?' active':'');
+          button.dataset.quality=item.id;
+          button.innerHTML=`<strong>${escapeHtml(item.label || item.id)}</strong><small>${escapeHtml(item.detail || 'Available')}</small>`;
+          button.onclick=()=>selectQuality(button);
+          $('qualities').appendChild(button);
+        });
+        $('quality-download').disabled=formats.length===0;
+        $('quality-download').textContent=formats.length?'Download Selected Format':'No playable formats found';
+        setJobPhase('awaiting_format');
+        return;
+      }
+      if(['ready','completed','success'].includes(result.status) && result.file_url){
+        $('preview-title').textContent=result.title || 'Download ready';
+        $('qualities').innerHTML='<div class="status status-success">Your file is ready to download.</div>';
+        $('quality-download').disabled=false;
+        $('quality-download').textContent='Download Ready File';
+        $('preview').dataset.fileUrl=result.file_url;
+        setJobPhase('ready');
+        return;
+      }
+      const percent=Number(result.progress || 0);
+      setJobPhase('processing');
+      setDownloadProgress(percent,result.status==='processing'?'Downloading and converting...':`Status: ${result.status}`);
+      $('qualities').innerHTML=`<div class="status status-loading">${escapeHtml(result.message || `Status: ${result.status}`)}${percent ? ` (${percent}%)` : ''}</div>`;
+      window.setTimeout(()=>pollJob(token,generation),2000);
+    }catch(error){
+      setJobPhase('failed');
+      showStatus(`${error.message}`,'error');
+    }
   }
 
   function setDownloadProgress(percent,label){
@@ -328,115 +389,43 @@
   }
 
   async function downloadSelected(){
-    const url=$('preview').dataset.url, quality=selectedQuality();
-    if(!url || !quality){showStatus('Please select a download quality.','error');return;}
+    const token=$('preview').dataset.jobToken;
+    const fileUrl=$('preview').dataset.fileUrl;
+    const quality=selectedQuality();
+    if(fileUrl){
+      const link=document.createElement('a');
+      link.href=fileUrl; link.download='vidzflow-video.mp4'; link.rel='noopener';
+      document.body.appendChild(link); link.click(); link.remove();
+      return;
+    }
+    if(!token || !quality){showStatus('Please select a download format.','error');return;}
 
     const button=$('quality-download');
     button.disabled=true;
-    button.innerHTML='<span class="spinner"></span>Preparing Download...';
     $('download-result').classList.remove('show');
     $('download-progress').classList.remove('show');
     setPermissionMessage('');
 
     try{
-      /*
-       * On browsers that implement the File System Access API, ask for the
-       * save location while the click is still a user gesture. If the user
-       * cancels/denies it, nothing is downloaded and we explain why.
-       */
-      const pickerSupported = typeof window.showSaveFilePicker === 'function';
-      let saveHandlePromise = null;
-      if(pickerSupported){
-        const suggested = 'vidzflow-video.mp4';
-        saveHandlePromise = window.showSaveFilePicker({
-          suggestedName:suggested,
-          types:[{description:'Video file',accept:{'video/mp4':['.mp4'],'video/webm':['.webm']}}]
-        });
-      }
-
-      const response=await fetch('/download-quality',{
-        method:'POST',
-        headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({url,quality})
-      });
+      const response=await fetch('/download-quality',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({job_token:token,quality})});
       const result=await response.json();
-      if(!response.ok || result.status!=='success') throw new Error(result.message || 'Download failed.');
-      if(!result.file_url) throw new Error('The server completed processing but did not return a download file.');
-
-      $('download-result-title').textContent='Download prepared';
-      $('download-result-text').textContent=`${result.title || 'Your video'} is ready. Starting the selected ${result.quality || quality} quality download…`;
-      $('download-result').classList.add('show');
-
-      const filename=getSuggestedFilename(result);
-
-      if(pickerSupported && saveHandlePromise){
-        try{
-          const handle=await saveHandlePromise;
-          const writable=await handle.createWritable();
-          const fileResponse=await fetch(result.file_url,{cache:'no-store'});
-          if(!fileResponse.ok) throw new Error('The server could not provide the video file.');
-          const total=Number(fileResponse.headers.get('Content-Length') || 0);
-          let loaded=0;
-          setDownloadProgress(0,'Downloading to selected location…');
-          if(fileResponse.body){
-            const reader=fileResponse.body.getReader();
-            while(true){
-              const {done,value}=await reader.read();
-              if(done) break;
-              await writable.write(value);
-              loaded += value.byteLength;
-              setDownloadProgress(total ? (loaded/total)*100 : Math.min(95,loaded/1048576),'Saving to your device…');
-            }
-          }else{
-            await writable.write(await fileResponse.blob());
-          }
-          await writable.close();
-          setDownloadProgress(100,'Saved successfully');
-          setPermissionMessage('<strong>Permission granted.</strong>The file was saved to the location you selected.');
-          $('download-result-text').textContent=`${result.title || 'Your video'} has been saved successfully.`;
-        }catch(error){
-          if(error && (error.name==='AbortError' || error.name==='NotAllowedError')){
-            $('download-result-title').textContent='Download cancelled';
-            $('download-result-text').textContent='No file was saved because you did not allow/select a save location.';
-            setPermissionMessage('<strong>Permission required.</strong>Please allow the browser save permission and choose a location to save the video.');
-            return;
-          }
-          throw error;
-        }
-      }else{
-        /*
-         * Safari/iOS and several mobile browsers do not expose showSaveFilePicker.
-         * A normal attachment download is the portable fallback; the browser/OS
-         * controls its own Downloads permission and storage location.
-         */
-        setPermissionMessage('<strong>Browser-controlled download.</strong>Your browser will open its normal download flow. If it asks for storage/download permission, choose Allow. If permission is denied, the browser will not save the file.');
-        const a=document.createElement('a');
-        a.href=result.file_url;
-        a.download=filename;
-        a.rel='noopener';
-        document.body.appendChild(a);
-        a.click();
-        a.remove();
-        $('download-result-title').textContent='Download sent to browser';
-        $('download-result-text').textContent='The browser download has been triggered. Check your browser Downloads area for the saved file.';
-      }
-
-      $('status').innerHTML='';
+      if(!response.ok) throw new Error(result.message || 'Could not start the download.');
+      $('qualities').innerHTML='<div class="status status-loading">Download queued...</div>';
+      setJobPhase('processing');
+      setDownloadProgress(0,'Queued for download...');
+      pollJob(token,pollGeneration);
     }catch(error){
-      $('download-result').classList.remove('show');
       if(error && (error.name==='AbortError' || error.name==='NotAllowedError')){
-        showStatus('Download cancelled. You must allow or select a save location to save the file.','error');
+        showStatus('Download cancelled. Allow or select a save location to continue.','error');
       }else{
         showStatus(`${error.message}`,'error');
       }
-    }finally{
-      button.disabled=false;
-      button.innerHTML='<svg class="btn-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12M7 11l5 5 5-5M5 21h14"/></svg>Download Selected Quality';
-    }
+    }finally{button.disabled=jobPhase!=='ready';}
   }
 
   function resetPreviewOnly(){
-    $('preview').classList.remove('show'); $('preview').dataset.url=''; $('qualities').innerHTML=''; $('download-result').classList.remove('show'); $('download-progress').classList.remove('show'); $('download-progress-bar').style.width='0%'; $('download-progress-percent').textContent='0%'; $('download-progress-label').textContent='Preparing…'; $('permission-note').innerHTML=''; $('quality-download').disabled=true;
+    pollGeneration++;
+    $('preview').classList.remove('show'); $('preview').dataset.url=''; $('preview').dataset.jobToken=''; $('preview').dataset.fileUrl=''; $('qualities').innerHTML=''; $('download-result').classList.remove('show'); $('download-progress').classList.remove('show'); $('download-progress-bar').style.width='0%'; $('download-progress-percent').textContent='0%'; $('download-progress-label').textContent='Preparing…'; $('permission-note').innerHTML=''; setJobPhase('idle');
   }
   function resetDownloader(){
     $('single-url').value=''; $('status').innerHTML=''; resetPreviewOnly(); $('single-url').focus(); window.scrollTo({top:0,behavior:'smooth'});

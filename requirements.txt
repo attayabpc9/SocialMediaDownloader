@@ -1,0 +1,9 @@
+Flask==2.3.3
+requests==2.31.0
+Werkzeug==2.3.7
+SQLAlchemy>=2.0,<3
+psycopg[binary]>=3.2,<4
+boto3>=1.35,<2
+yt-dlp>=2024.12
+gunicorn>=23,<24
+python-dotenv>=1.0,<2
